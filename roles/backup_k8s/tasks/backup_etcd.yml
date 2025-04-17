@@ -1,0 +1,156 @@
+---
+# ETCD installation
+- name: Check if etcdctl exists
+  ansible.builtin.command: which etcdctl
+  register: etcdctl_check
+  ignore_errors: true
+  changed_when: false
+  tags: etcd-install
+
+- name: Install etcdctl (Debian/Ubuntu)
+  block:
+  - name: Install etcd-client package
+    ansible.builtin.apt:
+      name: etcd-client
+      state: present
+      update_cache: yes
+
+  - name: Verify installation
+    ansible.builtin.command: etcdctl version
+    register: debian_install_check
+    changed_when: false
+  when:
+  - ansible_os_family == 'Debian'
+  - etcdctl_check.rc != 0
+  tags: etcd-install
+
+- name: Install etcdctl (RHEL/CentOS)
+  block:
+  - name: Create temp directory
+    ansible.builtin.file:
+      path: /tmp/etcd_install
+      state: directory
+      mode: '0755'
+
+  - name: Download etcd binary
+    ansible.builtin.get_url:
+      url: "{{ etcd_binary_url }}"
+      dest: "/tmp/etcd_install/etcd.tar.gz"
+      timeout: 60
+      validate_certs: no
+
+  - name: Extract etcdctl binary
+    ansible.builtin.shell:
+      cmd: tar xzf /tmp/etcd_install/etcd.tar.gz -C /tmp/etcd_install --strip-components=1 etcd-{{ etcd_version }}-linux-amd64/etcdctl
+      creates: /tmp/etcd_install/etcdctl
+
+  - name: Install binary system-wide
+    ansible.builtin.copy:
+      src: "/tmp/etcd_install/etcdctl"
+      dest: "/usr/local/bin/etcdctl"
+      mode: '0755'
+      remote_src: yes
+
+  - name: Create symlink in standard PATH
+    ansible.builtin.file:
+      src: "/usr/local/bin/etcdctl"
+      dest: "/usr/bin/etcdctl"
+      state: link
+
+  - name: Cleanup temp files
+    ansible.builtin.file:
+      path: /tmp/etcd_install
+      state: absent
+
+  - name: Verify installation
+    ansible.builtin.command: etcdctl version
+    register: rhel_install_check
+    changed_when: false
+  when:
+  - ansible_os_family == 'RedHat' , 'CentOS'
+  - etcdctl_check.rc != 0
+  tags: etcd-install
+
+# Backup preparation
+- name: Ensure backup directory exists
+  ansible.builtin.file:
+    path: "{{ backup_dir }}/etcd"
+    state: directory
+    mode: '0700'
+  tags: backup
+
+- name: Validate certificate files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+  - "{{ etcd_ca }}"
+  - "{{ etcd_cert }}"
+  - "{{ etcd_key }}"
+  register: cert_files
+  tags: verification
+
+- name: Create etcd snapshot
+  ansible.builtin.command: >-
+    /usr/local/bin/etcdctl --endpoints={{ etcd_endpoints }} --cacert={{ etcd_ca }} --cert={{ etcd_cert }} --key={{ etcd_key }} --command-timeout=120s snapshot save {{ backup_dir }}/etcd/etcd-snapshot-{{ ansible_date_time.iso8601_basic_short }}.db
+  environment:
+    ETCDCTL_API: "3"
+  register: etcd_snapshot
+  changed_when: '"Snapshot saved at" in etcd_snapshot.stdout'
+  when:
+  - cert_files.results[0].stat.exists
+  - cert_files.results[1].stat.exists
+  - cert_files.results[2].stat.exists
+  - ansible_os_family == 'RedHat'
+  tags: backup
+
+#Backup execution
+- name: Create etcd snapshot
+  ansible.builtin.command: >-
+    etcdctl --endpoints={{ etcd_endpoints }} --cacert={{ etcd_ca }} --cert={{ etcd_cert }} --key={{ etcd_key }} --command-timeout=120s snapshot save {{ backup_dir }}/etcd/etcd-snapshot-{{ ansible_date_time.iso8601_basic_short }}.db
+  environment:
+    ETCDCTL_API: "3"
+  register: etcd_snapshot
+  changed_when: '"Snapshot saved at" in etcd_snapshot.stdout'
+  when:
+  - cert_files.results[0].stat.exists
+  - cert_files.results[1].stat.exists
+  - cert_files.results[2].stat.exists
+  - ansible_os_family == 'Debian'
+  tags: backup
+
+# Verification and reporting
+- name: Validate etcd snapshot
+  ansible.builtin.command: >-
+    /usr/local/bin/etcdctl snapshot status --write-out=table {{ backup_dir }}/etcd/etcd-snapshot-{{ ansible_date_time.iso8601_basic_short }}.db
+  environment:
+    ETCDCTL_API: "3"
+  register: etcd_verify
+  changed_when: false
+  when: etcd_snapshot is succeeded
+  tags: verification
+
+- name: Display backup results
+  ansible.builtin.debug:
+    msg: |
+      ETCD Backup Report
+      =================
+      Timestamp: {{ ansible_date_time.iso8601 }}
+      Snapshot: {{ backup_dir }}/etcd/etcd-snapshot-{{ ansible_date_time.iso8601_basic_short }}.db
+      Status: {% if etcd_verify is succeeded %}SUCCESS{% else %}FAILED{% endif %}
+      {% if etcd_verify is succeeded %}
+      Verification:
+      {{ etcd_verify.stdout | trim }}
+      {% else %}
+      Error Details:
+      {{ etcd_snapshot.stderr | default(etcd_snapshot.stdout) | trim }}
+      {% endif %}
+  tags: reporting
+
+# - name: Handle backup failures
+#   ansible.builtin.fail:
+#     msg: >-
+#       ETCD backup failed with error: {% if etcd_snapshot is defined %} {{ etcd_snapshot.stderr | default(etcd_snapshot.stdout) | trim }} {% else %} Pre-condition check failed (missing certificates or connection issues) {% endif %}
+#   when: >
+#     etcd_snapshot is not defined or etcd_snapshot.rc != 0 or etcd_verify is failed
+#   tags: error-handling
+#   ignore_errors: true

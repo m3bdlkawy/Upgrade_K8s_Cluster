@@ -1,0 +1,35 @@
+---
+# Kubeadm upgrade configuration
+kubeadm_ignore_preflight_errors:
+- CoreDNSUnsupportedPlugins
+- CoreDNSMigration
+- CertExpired
+
+kubeadm_force_upgrade: true
+kubeadm_etcd_upgrade: true
+kubeadm_skip_preflight: false
+kubeadm_certificate_renewal: true
+upgrade_timeout: 1800 # 30 minutes timeout for upgrade operations
+
+# Kubernetes repository configuration
+kubernetes_repo_base_url: "https://pkgs.k8s.io/core:/stable"
+kubernetes_deb_repo_format: "deb [signed-by={{ kubernetes_key_path }}] {{ kubernetes_repo_base_url }}:/v{{ next_minor_version.split('.')[0] }}.{{ next_minor_version.split('.')[1] }}/deb/ /"
+
+# Keyring configuration
+kubernetes_key_dir: "/usr/share/keyrings"
+kubernetes_key_temp_path: "/tmp/kubernetes-apt-keyring.gpg"
+kubernetes_key_path: "{{ kubernetes_key_dir }}/kubernetes-apt-keyring.gpg"
+
+# Version selection behavior
+version_selection_strategy: "next_minor" # next_minor or latest
+allow_downgrade: false
+
+# Timeout settings
+repo_update_timeout: 30
+package_install_timeout: 600 # 10 minutes for package operations
+
+# Node upgrade configuration
+drain_timeout: 300 # seconds for drain operation
+kube_config: "/home/ansible/.kube/config" # default kubeconfig location
+
+# kube_config: /etc/kubernetes/admin.conf

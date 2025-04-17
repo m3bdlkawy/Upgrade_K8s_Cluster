@@ -1,0 +1,194 @@
+---
+- name: Validate upgrade prerequisites (Debian)
+  block:
+  - name: Verify kube_upgrade_full_version is set
+    ansible.builtin.assert:
+      that:
+      - kube_upgrade_full_version is defined
+      - kube_upgrade_full_version != ""
+      fail_msg: "kube_upgrade_full_version must be defined for package upgrades"
+    tags: upgrade
+
+  - name: Verify kube_config is set
+    ansible.builtin.assert:
+      that: kube_config is defined
+      fail_msg: "kube_config must be defined for kubectl operations"
+    tags: upgrade
+
+- name: Drain node before upgrade (Debian)
+  block:
+  - name: Get node name
+    ansible.builtin.command: hostname -s
+    register: node_hostname
+    changed_when: false
+    tags: upgrade
+
+  - name: Drain node where upgrade the node
+    ansible.builtin.command: |
+      kubectl --kubeconfig {{ kube_config }}  drain {{ node_hostname.stdout }} \
+      --ignore-daemonsets \
+      --delete-emptydir-data \
+      --force \
+      --timeout={{ drain_timeout }}s
+    delegate_to: "{{ groups['masters'][0] }}"
+    register: drain_result
+    ignore_errors: true
+    tags: upgrade
+
+  - name: Verify drain result when attempted
+    ansible.builtin.assert:
+      that:
+      - drain_result is skipped or drain_result.rc == 0 or "evicting pods" in drain_result.stdout
+      fail_msg: |
+        Node drain failed on {{ node_hostname.stdout }}
+        Error: {{ drain_result.stderr | default(drain_result.stdout) }}
+    when: drain_result is defined
+    tags: upgrade
+
+- name: Upgrade Kubernetes components (Debian)
+  block:
+  - name: Update apt cache
+    ansible.builtin.apt:
+      update_cache: yes
+    tags: upgrade
+
+  - name: Install kubelet version
+    ansible.builtin.apt:
+      name: "kubelet={{ kube_upgrade_full_version }}"
+      state: present
+      allow_downgrade: "{{ allow_downgrade | default(false) }}"
+    async: "{{ package_install_timeout | default(600) }}"
+    poll: 0
+    register: kubelet_install
+    tags: upgrade
+
+  - name: Wait for kubelet installation to complete
+    ansible.builtin.async_status:
+      jid: "{{ kubelet_install.ansible_job_id }}"
+    register: kubelet_job_result
+    until: kubelet_job_result.finished
+    retries: "{{ (package_install_timeout|int / 10)|int + 1 }}"
+    delay: 10
+    tags: upgrade
+
+  - name: Install kubectl version
+    ansible.builtin.apt:
+      name: "kubectl={{ kube_upgrade_full_version }}"
+      state: present
+      allow_downgrade: "{{ allow_downgrade | default(false) }}"
+    async: "{{ package_install_timeout | default(600) }}"
+    poll: 0
+    register: kubectl_install
+    tags: upgrade
+
+  - name: Wait for kubectl installation to complete
+    ansible.builtin.async_status:
+      jid: "{{ kubectl_install.ansible_job_id }}"
+    register: kubectl_job_result
+    until: kubectl_job_result.finished
+    retries: "{{ (package_install_timeout|int / 10)|int + 1 }}"
+    delay: 10
+    tags: upgrade
+
+- name: Restart and verify services (Debian)
+  block:
+  - name: Reload systemd daemon
+    ansible.builtin.systemd:
+      daemon_reload: yes
+    tags: upgrade
+
+  - name: Restart kubelet service
+    ansible.builtin.service:
+      name: kubelet
+      state: restarted
+      enabled: yes
+    tags: upgrade
+
+  - name: Verify kubelet version
+    ansible.builtin.command: kubelet --version
+    register: kubelet_version_check
+    changed_when: false
+    tags: upgrade
+
+  - name: Validate kubelet version
+    ansible.builtin.assert:
+      that:
+      - "'v' + kube_upgrade_version in kubelet_version_check.stdout"
+      fail_msg: |
+        Kubelet version mismatch!
+        Expected: v{{ kube_upgrade_version }}
+        Actual: {{ kubelet_version_check.stdout }}
+    tags: upgrade
+
+- name: Post-upgrade verification (Debian)
+  block:
+  - name: Verify kubectl installation
+    ansible.builtin.command: kubectl --kubeconfig {{ kube_config }} version --client -o json
+    register: kubectl_version_json
+    changed_when: false
+    tags: upgrade
+
+  - name: Set kubectl version fact
+    ansible.builtin.set_fact:
+      kubectl_version: "{{ (kubectl_version_json.stdout | from_json).clientVersion.gitVersion }}"
+    tags: upgrade
+
+  - name: Validate kubectl version
+    ansible.builtin.assert:
+      that:
+      - "'v' + kube_upgrade_version in kubectl_version"
+      fail_msg: |
+        Kubectl version mismatch!
+        Expected: v{{ kube_upgrade_version }}
+        Actual: {{ kubectl_version }}
+    tags: upgrade
+
+  # - name: Uncordon node
+  #   ansible.builtin.command: kubectl --kubeconfig {{ kube_config }}  uncordon {{ node_hostname.stdout }}
+  #   delegate_to: "{{ groups['masters'][0] }}"
+  #   tags: upgrade
+
+  - name: Uncordon first master node
+    ansible.builtin.shell: |
+      kubectl --kubeconfig {{ kube_config }} uncordon {{ node_hostname.stdout }}
+    args:
+      executable: /bin/bash
+    delegate_to: "{{ groups['masters'][0] }}"
+    register: uncordon_result
+    tags: upgrade
+
+  # Debug messages to print the uncordon result details
+  - name: Display full uncordon result
+    ansible.builtin.debug:
+      var: uncordon_result
+      verbosity: 2 # Only shows in verbose mode (-vv or higher)
+
+  - name: Show uncordon command output
+    ansible.builtin.debug:
+      msg: |
+        Uncordon command results:
+        - Exit code: {{ uncordon_result.rc }}
+        - stdout: {{ uncordon_result.stdout }}
+        - stderr: {{ uncordon_result.stderr }}
+    when: uncordon_result is changed or uncordon_result.rc != 0
+    tags: upgrade
+
+  - name: Verify node readiness
+    ansible.builtin.command: >
+      kubectl --kubeconfig {{ kube_config }}  get node {{ node_hostname.stdout }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+    delegate_to: "{{ groups['masters'][0] }}"
+    register: node_ready_status
+    until: node_ready_status.stdout == "True"
+    retries: 10
+    delay: 30
+    changed_when: false
+    tags: upgrade
+
+  - name: Display upgrade summary
+    ansible.builtin.debug:
+      msg: |
+        Debian Node Upgrade Complete:
+        - Node: {{ node_hostname.stdout }}
+        - Kubelet: {{ kubelet_version_check.stdout }}
+        - Kubectl: {{ kubectl_version }}
+    tags: upgrade

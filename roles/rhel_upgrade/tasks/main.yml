@@ -1,0 +1,8 @@
+- name: Determine upgrade version
+  ansible.builtin.include_tasks: kubeadm-upgrade-rhel.yml
+
+- name: Determine upgrade version
+  ansible.builtin.include_tasks: kubeadm_upgrade_plan.yml
+
+- name: Determine upgrade version
+  ansible.builtin.include_tasks: upgrade_kubelet_kubectl_rhel.yml

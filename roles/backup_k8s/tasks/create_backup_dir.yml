@@ -1,0 +1,16 @@
+---
+- name: Create unique backup directory
+  ansible.builtin.file:
+    path: "{{ backup_dir }}"
+    state: directory
+    mode: '0700'
+
+- name: Create subdirectories
+  ansible.builtin.file:
+    path: "{{ backup_dir }}/{{ item }}"
+    state: directory
+    mode: '0700'
+  loop:
+    - etcd
+    - kubeadm
+    - resources

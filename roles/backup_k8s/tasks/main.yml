@@ -1,0 +1,21 @@
+---
+- name: Create backup directory
+  include_tasks: create_backup_dir.yml
+
+- name: Backup etcd (single master only)
+  include_tasks: backup_etcd.yml
+  when: inventory_hostname == groups['masters'][0]
+
+- name: Backup kubeadm configs (all masters)
+  include_tasks: backup_kubeadm.yml
+  when: "'masters' in group_names"
+
+- name: Backup cluster resources (single master only)
+  include_tasks: backup_k8s_resources.yml
+  when: inventory_hostname == groups['masters'][0]
+  # - name: Create backup directory
+  #   include_tasks: identify_versions.yml
+
+  #
+  # - name: Create backup directory
+  #   include_tasks: update_repo.yml

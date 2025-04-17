@@ -1,0 +1,58 @@
+---
+- name: Create backup directory
+  ansible.builtin.file:
+    path: "{{ backup_dir }}/kubeadm"
+    state: directory
+    mode: '0700'
+
+- name: Backup kubeadm configuration files
+  ansible.builtin.copy:
+    remote_src: yes
+    src: "{{ kubeadm_config_path }}/"
+    dest: "{{ backup_dir }}/kubeadm/"
+    mode: '0600'
+
+- name: Backup kubeconfig
+  ansible.builtin.copy:
+    remote_src: yes
+    src: "{{ kubeconfig_path }}"
+    dest: "{{ backup_dir }}/kubeadm/"
+    mode: '0600'
+
+- name: Get kubeadm init defaults configuration
+  ansible.builtin.command: kubeadm config print init-defaults
+  register: kubeadm_init_config
+  changed_when: false
+  ignore_errors: yes
+
+- name: Get kubeadm join defaults configuration
+  ansible.builtin.command: kubeadm config print join-defaults
+  register: kubeadm_join_config
+  changed_when: false
+  ignore_errors: yes
+
+- name: Combine and save kubeadm configurations
+  ansible.builtin.copy:
+    content: |
+      # kubeadm init defaults configuration
+      {{ kubeadm_init_config.stdout | default('# init config not available') }}
+
+      ---
+      # kubeadm join defaults configuration
+      {{ kubeadm_join_config.stdout | default('# join config not available') }}
+    dest: "{{ backup_dir }}/kubeadm/kubeadm-config-{{ ansible_date_time.iso8601_basic_short }}.yaml"
+    mode: '0600'
+
+- name: Verify configuration backup
+  ansible.builtin.stat:
+    path: "{{ backup_dir }}/kubeadm/kubeadm-config-{{ ansible_date_time.iso8601_basic_short }}.yaml"
+  register: config_backup
+
+- name: Warn if configuration backup failed
+  ansible.builtin.debug:
+    msg: "Note: kubeadm configuration backup might be incomplete"
+  when: >
+    kubeadm_init_config is failed or
+    kubeadm_join_config is failed or
+    not config_backup.stat.exists
+  changed_when: false

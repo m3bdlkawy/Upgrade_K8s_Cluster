@@ -1,0 +1,218 @@
+---
+- name: Get current Kubernetes versionEnsure directory for keyring exists
+  ansible.builtin.command: kubeadm version -o short
+  register: kube_version
+  changed_when: false
+  tags: always
+
+- name: Extract current version number
+  ansible.builtin.set_fact:
+    current_version: "{{ kube_version.stdout | regex_replace('^v(\\d+\\.\\d+\\.\\d+).*', '\\1') }}"
+  tags: always
+
+- name: Debug current Kubernetes version
+  ansible.builtin.debug:
+    msg: "Current Kubernetes version: v{{ current_version }}"
+  tags: always
+
+- name: Calculate next minor version
+  ansible.builtin.set_fact:
+    next_minor_version: "{{ current_version.split('.')[0] }}.{{ current_version.split('.')[1] | int + 1 }}.0"
+  tags: always
+
+- name: Debug next minor version
+  ansible.builtin.debug:
+    msg: "Next minor version: {{ next_minor_version }}"
+  tags: always
+
+- name: Update repository when target version not found
+  block:
+  - name: Ensure directory for keyring exists
+    ansible.builtin.file:
+      path: /usr/share/keyrings
+      state: directory
+      mode: '0755'
+  - name: Download Kubernetes apt key
+    ansible.builtin.get_url:
+      url: "https://pkgs.k8s.io/core:/stable:/v{{ next_minor_version.split('.')[0] }}.{{ next_minor_version.split('.')[1] }}/deb/Release.key"
+      dest: /tmp/kubernetes-apt-keyring.gpg
+      mode: '0644'
+  - name: Add Kubernetes apt key to trusted keyring
+    ansible.builtin.command: >
+      gpg --dearmor --output /usr/share/keyrings/kubernetes-apt-keyring.gpg /tmp/kubernetes-apt-keyring.gpg
+    args:
+      creates: /usr/share/keyrings/kubernetes-apt-keyring.gpg
+  - name: Clean up temporary key file
+    ansible.builtin.file:
+      path: /tmp/kubernetes-apt-keyring.gpg
+      state: absent
+  - name: Add Kubernetes apt repository for next minor version
+    ansible.builtin.apt_repository:
+      repo: "deb [signed-by=/usr/share/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ next_minor_version.split('.')[0] }}.{{ next_minor_version.split('.')[1] }}/deb/ /"
+      state: present
+      filename: "kubernetes-v{{ next_minor_version.split('.')[0] }}.{{ next_minor_version.split('.')[1] }}"
+      update_cache: no
+  - name: Verify repository is properly configured
+    ansible.builtin.command: apt-get update -o Dir::Etc::sourcelist="sources.list.d/kubernetes-v{{ next_minor_version.split('.')[0] }}.{{ next_minor_version.split('.')[1] }}.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
+    register: repo_test
+    changed_when: false
+    ignore_errors: yes
+  - name: Update apt package index (full)
+    ansible.builtin.apt:
+      update_cache: yes
+    when: repo_test.rc == 0
+  when:
+  - target_version is undefined or target_version == ""
+  tags: always
+
+- name: Check available versions
+  block:
+  - name: Get available versions
+    ansible.builtin.command: apt-cache madison kubeadm
+    register: available_versions
+    changed_when: false
+
+  - name: Extract base versions
+    ansible.builtin.set_fact:
+      available_versions_list: "{{ available_versions.stdout_lines | map('regex_replace', '.*\\|\\s+(\\d+\\.\\d+\\.\\d+).*', '\\1') | list }}"
+
+  - name: Extract full versions with suffix
+    ansible.builtin.set_fact:
+      full_available_versions: "{{ available_versions.stdout_lines | map('regex_replace', '.*\\|\\s+([0-9]+\\.[0-9]+\\.[0-9]+-[0-9.]+).*', '\\1') | list }}"
+
+  - name: Debug extracted versions
+    ansible.builtin.debug:
+      msg:
+      - "Available base versions: {{ available_versions_list }}"
+      - "Available full versions: {{ full_available_versions }}"
+
+- name: Find target version in available versions
+  block:
+  - name: Initialize target version variables
+    ansible.builtin.set_fact:
+      target_version: ""
+      target_full_version: ""
+
+  - name: Debug available versions
+    ansible.builtin.debug:
+      msg:
+      - "Available base versions: {{ available_versions_list }}"
+      - "Available full versions: {{ full_available_versions }}"
+
+  - name: Set target base version from next minor
+    ansible.builtin.set_fact:
+      target_version: >-
+        {{
+          (available_versions_list |
+           select('match', '^' + next_minor_version.split('.')[0] + '\\.' + next_minor_version.split('.')[1] + '\\.') |
+           list |
+           sort |
+           last) | default('')
+        }}
+    register: set_target_version
+
+  - name: Set fallback target version
+    ansible.builtin.set_fact:
+      target_version: "{{ (available_versions_list | sort | last) | default('') }}"
+    when: target_version == ""
+
+  - name: Debug target base version
+    ansible.builtin.debug:
+      msg: "Selected target base version: {{ target_version }}"
+
+  - name: Set target full version
+    ansible.builtin.set_fact:
+      target_full_version: >-
+        {{
+          (full_available_versions |
+           select('match', '^' + target_version) |
+           list |
+           first) | default('')
+        }}
+
+  - name: Debug target full version
+    ansible.builtin.debug:
+      msg: "Selected target full version: {{ target_full_version }}"
+    when: target_version != ""
+  tags: always
+
+- name: Validate target version exists
+  block:
+  - name: Check if we found any versions
+    ansible.builtin.assert:
+      that: available_versions_list | length > 0
+      success_msg: "Found {{ available_versions_list | length }} available versions"
+      fail_msg: "No available versions found in repositories"
+
+  - name: Verify we have target versions
+    ansible.builtin.assert:
+      that:
+      - target_version != ""
+      - target_full_version != ""
+      success_msg: "Found target version {{ target_version }} (package: {{ target_full_version }}) for upgrade"
+      fail_msg: |-
+        No suitable version found for upgrade.
+        Current version: {{ current_version }}
+        Next minor version: {{ next_minor_version }}
+        Available versions: {{ available_versions_list }}
+  tags: always
+
+- name: Set kube_upgrade_version facts
+  block:
+  - name: Verify target_version is set
+    ansible.builtin.assert:
+      that: target_version is defined and target_version != ""
+      msg: "target_version must be set before setting kube_upgrade_version"
+
+  - name: Set base version
+    ansible.builtin.set_fact:
+      kube_upgrade_version: "{{ target_version }}"
+      cacheable: yes
+
+  - name: Set full version
+    ansible.builtin.set_fact:
+      kube_upgrade_full_version: "{{ target_full_version }}"
+      cacheable: yes
+
+  - name: Verify kube_upgrade_version is set
+    ansible.builtin.assert:
+      that: kube_upgrade_version is defined and kube_upgrade_version != ""
+      msg: "kube_upgrade_version was not properly set"
+  tags: always
+
+- name: Debug version information
+  ansible.builtin.debug:
+    msg:
+    - "Current version: {{ current_version }}"
+    - "Target version: {{ kube_upgrade_version }}"
+    - "Full package version: {{ kube_upgrade_full_version }}"
+  tags: always
+
+- name: Upgrade kubeadm package
+  block:
+  - name: Verify kube_upgrade_full_version is set
+    ansible.builtin.assert:
+      that: kube_upgrade_full_version is defined and kube_upgrade_full_version != ""
+      msg: "kube_upgrade_full_version must be set before package upgrade"
+
+  - name: Install specific kubeadm version
+    ansible.builtin.apt:
+      name: "kubeadm={{ kube_upgrade_full_version }}"
+      state: present
+      allow_downgrade: yes
+      update_cache: yes
+
+  - name: Verify kubeadm version
+    ansible.builtin.command: kubeadm version -o short
+    register: kubeadm_version_check
+    changed_when: false
+
+  - name: Set kubeadm version as fact
+    ansible.builtin.set_fact:
+      kubeadm_upgrade_full_version: "{{ kubeadm_version_check.stdout }}"
+      cacheable: yes
+
+  - name: Debug kubeadm version
+    ansible.builtin.debug:
+      msg: "Upgraded kubeadm from {{ current_version }} to {{ kubeadm_version_check.stdout }}"
+  tags: upgrade

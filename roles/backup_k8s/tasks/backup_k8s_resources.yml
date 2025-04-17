@@ -1,0 +1,48 @@
+---
+# Fixed resources backup section
+# - name: Create resources backup directory
+#   ansible.builtin.file:
+#     path: "{{ backup_dir }}/resources"
+#     state: directory
+#     mode: '0700'
+
+- name: Backup all namespaced resources
+  ansible.builtin.shell: |
+    kubectl get all --all-namespaces -o yaml > "{{ backup_dir }}/resources/all-namespaced-resources-{{ ansible_date_time.iso8601_basic_short }}.yaml"
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+
+- name: Backup cluster-wide resources
+  ansible.builtin.shell: |
+    kubectl get clusterroles,clusterrolebindings,storageclasses,validatingwebhookconfigurations,mutatingwebhookconfigurations,crd -o yaml > "{{ backup_dir }}/resources/cluster-wide-resources-{{ ansible_date_time.iso8601_basic_short }}.yaml"
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+
+- name: Create manifests backup directory
+  ansible.builtin.file:
+    path: "{{ backup_dir }}/resources/manifests"
+    state: directory
+    mode: '0700'
+
+- name: Backup all Kubernetes manifests
+  ansible.builtin.find:
+    paths:
+      - /etc/kubernetes/manifests
+    patterns: '*.yaml,*.yml'
+    file_type: file
+  register: k8s_manifests
+
+- name: Copy Kubernetes manifests to backup
+  ansible.builtin.copy:
+    remote_src: yes
+    src: "{{ item.path }}"
+    dest: "{{ backup_dir }}/resources/manifests/"
+    mode: '0644'
+  loop: "{{ k8s_manifests.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: k8s_manifests.files | length > 0

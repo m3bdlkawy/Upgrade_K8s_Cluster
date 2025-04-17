@@ -1,0 +1,47 @@
+---
+- name: Get current Kubernetes version
+  ansible.builtin.shell: |
+    kubectl version --output=json | jq -r '.serverVersion.gitVersion' | sed 's/^v//'
+  args:
+    executable: /bin/bash
+  register: current_k8s_version
+  changed_when: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+
+- name: Set current version fact
+  ansible.builtin.set_fact:
+    current_version: "{{ current_k8s_version.stdout }}"
+
+- name: Get available kubeadm versions (Debian)
+  ansible.builtin.shell: |
+    apt-cache madison kubeadm | awk '{print $3}' | sort -Vu
+  args:
+    executable: /bin/bash
+  register: available_versions
+  changed_when: false
+  when: ansible_os_family == 'Debian'
+
+- name: Get available kubeadm versions (RHEL)
+  ansible.builtin.shell: |
+    yum list --showduplicates kubeadm | grep kubeadm | awk '{print $2}' | sort -Vu
+  args:
+    executable: /bin/bash
+  register: available_versions
+  changed_when: false
+  when: ansible_os_family == 'RedHat'
+
+- name: Determine next version
+  ansible.builtin.set_fact:
+    next_version: "{{ (available_versions.stdout_lines | select('match', '^' + current_version.split('.')[0:2]|join('.') + '\\.') | list | sort | last) | default('') }}"
+  when:
+  - available_versions.stdout_lines is defined
+  - current_version is defined
+
+- name: Show version information
+  ansible.builtin.debug:
+    msg: |
+      Version Information:
+      - Current Kubernetes version: {{ current_version | default('Unknown') }}
+      - Available kubeadm versions: {{ available_versions.stdout_lines | default([]) | join(', ') }}
+      - Recommended next version: {{ next_version | default('None available') }}

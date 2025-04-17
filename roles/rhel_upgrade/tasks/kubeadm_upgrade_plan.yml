@@ -1,0 +1,76 @@
+---
+- name: Perform kubeadm upgrade apply
+  block:
+  - name: Apply kubeadm upgrade on first master
+    ansible.builtin.command: >
+      kubeadm upgrade apply -y {{ kubeadm_latest_upgrade_version }} --ignore-preflight-errors={{ kubeadm_ignore_preflight_errors | join(',') }} {% if kubeadm_force_upgrade %}--force{% endif %} {% if kubeadm_etcd_upgrade %}--etcd-upgrade=true{% else %}--etcd-upgrade=false{% endif %}
+    register: upgrade_apply_result
+    changed_when: upgrade_apply_result.rc == 0
+    when: inventory_hostname == groups['masters'][0]
+
+  - name: Verify control plane upgrade success
+    ansible.builtin.assert:
+      that:
+      - "'successfully upgraded' in upgrade_apply_result.stdout"
+      fail_msg: "Control plane upgrade failed"
+      success_msg: "Control plane upgraded successfully to {{ kubeadm_latest_upgrade_version }}"
+    when: inventory_hostname == groups['masters'][0]
+
+  - name: Upgrade other control plane nodes
+    ansible.builtin.command: >
+      kubeadm upgrade node --ignore-preflight-errors={{ kubeadm_ignore_preflight_errors | join(',') }}
+    register: upgrade_node_result
+    changed_when: upgrade_node_result.rc == 0
+    when:
+    - inventory_hostname in groups['masters']
+    - inventory_hostname != groups['masters'][0]
+
+  - name: Upgrade worker nodes
+    ansible.builtin.command: >
+      kubeadm upgrade node --ignore-preflight-errors={{ kubeadm_ignore_preflight_errors | join(',') }}
+    register: upgrade_node_result
+    changed_when: upgrade_node_result.rc == 0
+    when: inventory_hostname in groups['workers']
+
+  - name: Restart kubelet
+    ansible.builtin.service:
+      name: kubelet
+      state: restarted
+
+  - name: Verify node upgrades
+    ansible.builtin.assert:
+      that:
+      - upgrade_node_result is defined
+      - "'upgraded successfully' in upgrade_node_result.stdout or 'upgraded successfully' in upgrade_node_result.stderr"
+      fail_msg: "Node upgrade failed"
+      success_msg: "Node upgraded successfully"
+    when: upgrade_node_result is defined
+    ignore_errors: yes
+
+  - name: Wait for API server to be available
+    ansible.builtin.command: kubectl --kubeconfig {{ kube_config }} cluster-info
+    register: api_server_check
+    until: api_server_check.rc == 0
+    retries: 10
+    delay: 10
+    ignore_errors: yes
+    delegate_to: "{{ groups['masters'][0] }}"
+
+  - name: Get final node versions
+    ansible.builtin.command: kubectl --kubeconfig {{ kube_config }} get nodes -o wide
+    register: node_versions
+    changed_when: false
+    ignore_errors: yes
+    delegate_to: "{{ groups['masters'][0] }}"
+  - name: Display upgrade summary
+    ansible.builtin.debug:
+      msg: |
+        Upgrade Summary:
+        - Target Version: v{{ kubeadm_latest_upgrade_version }}
+        - Control Plane: {{ upgrade_apply_result is defined and 'successfully' in upgrade_apply_result.stdout | default('Pending') }}
+        - Nodes Status: {{ node_versions.stdout if node_versions is defined and node_versions.stdout != '' else 'Unable to verify - API server may be restarting' }}
+        {% if upgrade_node_result is defined %}
+        - Node Upgrade Result: {{ upgrade_node_result.stdout | default('No output') }}
+        {% endif %}
+
+  tags: upgrade

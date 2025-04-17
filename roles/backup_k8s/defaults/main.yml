@@ -1,0 +1,27 @@
+---
+# Single backup location with timestamp
+backup_dir: "/opt/k8s-pre-upgrade-backup-{{ ansible_date_time.date }}"
+
+# etcd backup settings
+etcd_cert_dir: "/etc/kubernetes/pki/etcd"
+etcd_snapshot_prefix: "etcd-snapshot"
+
+# kubeadm backup settings
+kubeadm_config_path: "/etc/kubernetes"
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+
+# Version identification settings
+version_check_enabled: true
+
+# Directory to store etcd backups
+etcd_backup_dir: "/opt/etcd-backups"
+
+#Set etcd certificate paths as variable
+etcd_version: "v3.5.12"
+#etcd_backup_dir: "/backups"
+etcd_cert: "/etc/kubernetes/pki/etcd/server.crt"
+etcd_key: "/etc/kubernetes/pki/etcd/server.key"
+etcd_ca: "/etc/kubernetes/pki/etcd/ca.crt"
+etcd_endpoints: "https://127.0.0.1:2379"
+kubernetes_repo_url: "https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64"
+etcd_binary_url: "https://github.com/etcd-io/etcd/releases/download/{{ etcd_version }}/etcd-{{ etcd_version }}-linux-amd64.tar.gz"

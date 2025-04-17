@@ -1,0 +1,7 @@
+#!/bin/bash
+ETCDCTL_API=3 etcdctl \
+--write-out=table \
+--cacert=/etc/kubernetes/pki/etcd/ca.crt \
+--cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt \
+--key=/etc/kubernetes/pki/etcd/healthcheck-client.key \
+snapshot status {{ backup_dir }}/etcd/etcd-snapshot.db

@@ -1,0 +1,12 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: UpgradeConfiguration
+apply:
+  certificateRenewal: false  # Disable automatic certificate renewal during upgrade
+  etcdUpgrade: true
+  imagePullPolicy: IfNotPresent
+  imagePullSerial: true
+node:
+  certificateRenewal: false  # Disable for node components
+  etcdUpgrade: true
+  imagePullPolicy: IfNotPresent
+  imagePullSerial: true

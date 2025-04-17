@@ -1,0 +1,153 @@
+---
+- name: Verify kubeadm exists
+  ansible.builtin.command: which kubeadm
+  register: kubeadm_check
+  changed_when: false
+  ignore_errors: yes
+
+- name: Fail if kubeadm not found
+  ansible.builtin.fail:
+    msg: "kubeadm not found on the system"
+  when: kubeadm_check.rc != 0
+
+- name: Get current kubeadm package version
+  ansible.builtin.command: rpm -q kubeadm
+  register: current_kubeadm_rpm
+  changed_when: false
+
+- name: Extract current version from RPM
+  ansible.builtin.set_fact:
+    current_kubeadm_version: "{{ current_kubeadm_rpm.stdout | regex_replace('kubeadm-(\\d+\\.\\d+\\.\\d+).*', '\\1') }}"
+
+- name: Get system architecture from kubeadm package
+  ansible.builtin.command: rpm -q kubeadm --qf '%{ARCH}'
+  register: system_arch
+  changed_when: false
+
+- name: Configure automatic GPG key acceptance
+  ansible.builtin.lineinfile:
+    path: /etc/yum.conf
+    line: 'assumeyes=1'
+    regexp: '^assumeyes='
+    state: present
+
+- name: Get current Kubernetes version
+  ansible.builtin.command: kubeadm version -o short
+  register: kube_version
+  changed_when: false
+
+- name: Extract current version number
+  ansible.builtin.set_fact:
+    current_version: "{{ kube_version.stdout | regex_replace('^v(\\d+\\.\\d+\\.\\d+).*', '\\1') }}"
+
+- name: Validate current version format
+  ansible.builtin.assert:
+    that: current_version is match('^\\d+\\.\\d+\\.\\d+$')
+    fail_msg: "Invalid current version format: {{ current_version }}"
+
+- name: Calculate next minor version
+  ansible.builtin.set_fact:
+    next_minor_version: "{{ current_version.split('.')[0] }}.{{ current_version.split('.')[1] | int + 1 }}.0"
+
+- name: Configure Kubernetes repository
+  block:
+  - name: Ensure repo directory exists
+    ansible.builtin.file:
+      path: /etc/yum.repos.d
+      state: directory
+      mode: '0755'
+  - name: Create Kubernetes repo file
+    ansible.builtin.copy:
+      dest: /etc/yum.repos.d/kubernetes-1.repo
+      content: |
+        [Upgrade_kubernetes]
+        name=Upgrade_Kubernetes
+        baseurl={{ kubernetes_rpm_repo_format }}
+        enabled=1
+        gpgcheck=1
+        repo_gpgcheck=1
+        gpgkey=https://pkgs.k8s.io/core:/stable:/v{{ next_minor_version.split('.')[0] }}.{{ next_minor_version.split('.')[1] }}/rpm/repodata/repomd.xml.key
+        exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+      mode: '0644'
+
+- name: Clean package manager metadata
+  ansible.builtin.command: "{{ ansible_facts.pkg_mgr }} clean all --enablerepo=Upgrade_kubernetes"
+  changed_when: false
+  timeout: 30
+
+- name: Verify repository metadata
+  ansible.builtin.command: >
+    {{ ansible_facts.pkg_mgr }} --disablerepo=* --enablerepo=Upgrade_kubernetes makecache -y
+  environment:
+    LANG: "C"
+    LC_ALL: "C"
+  timeout: 120
+  register: makecache_result
+  ignore_errors: yes
+
+- name: Get latest available kubeadm version
+  ansible.builtin.shell: |
+    {{ ansible_facts.pkg_mgr }} list --showduplicates kubeadm --disableexcludes=Upgrade_kubernetes |
+    grep {{ system_arch.stdout }} |
+    sort -k 1 -t':' -g -r |
+    awk '{print $2}' |
+    head -n 1
+  args:
+    executable: /bin/bash
+  register: latest_kubeadm_version
+  changed_when: false
+
+- name: Extract version number from latest version
+  ansible.builtin.set_fact:
+    latest_kubeadm_version_clean: "{{ latest_kubeadm_version.stdout | regex_replace('(\\d+\\.\\d+\\.\\d+).*', '\\1') }}"
+
+- name: Set target version
+  ansible.builtin.set_fact:
+    target_version: "{{ latest_kubeadm_version_clean }}"
+    kube_upgrade_full_version: "{{ latest_kubeadm_version.stdout }}"
+    cacheable: true
+
+- name: Validate target version
+  ansible.builtin.assert:
+    that:
+    - target_version != ""
+    - kube_upgrade_full_version != ""
+    fail_msg: |-
+      No suitable version found.
+      Current version: {{ current_version }}
+      Latest available version: {{ latest_kubeadm_version_clean }}
+      System architecture: {{ system_arch.stdout }}
+
+- name: Upgrade kubeadm
+  block:
+  - name: Temporarily remove excludes
+    ansible.builtin.lineinfile:
+      path: /etc/yum.repos.d/kubernetes-1.repo
+      regexp: '^exclude='
+      state: absent
+
+  - name: Install kubeadm
+    ansible.builtin.command: >
+      {{ ansible_facts.pkg_mgr }} install -y kubeadm-{{ kube_upgrade_full_version }} --disableexcludes=Upgrade_kubernetes
+    register: install_result
+    ignore_errors: yes
+
+- name: Verify installation
+  ansible.builtin.command: kubeadm version -o short
+  register: kubeadm_version_check
+  changed_when: false
+
+- name: Show upgrade results
+  ansible.builtin.debug:
+    msg: "Successfully upgraded kubeadm from v{{ current_version }} to {{ kubeadm_version_check.stdout }}"
+  when: kubeadm_version_check is defined
+
+- name: Set full version for kubeadm version
+  ansible.builtin.set_fact:
+    kubeadm_latest_upgrade_version: "{{ kubeadm_version_check.stdout }}"
+    cacheable: true
+
+- name: Set full version for kubeadm version (strict version extraction)
+  ansible.builtin.set_fact:
+    kubectl_latest_upgrade_version: "{{ kubeadm_version_check.stdout | regex_replace('^v(\\d+\\.\\d+\\.\\d+).*', '\\1') }}"
+    cacheable: true
