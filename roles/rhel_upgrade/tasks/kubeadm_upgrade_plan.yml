@@ -1,6 +1,7 @@
 ---
 - name: Perform kubeadm upgrade apply
   block:
+  # Task 1: Apply kubeadm upgrade on the first master
   - name: Apply kubeadm upgrade on first master
     ansible.builtin.command: >
       kubeadm upgrade apply -y {{ kubeadm_latest_upgrade_version }} --ignore-preflight-errors={{ kubeadm_ignore_preflight_errors | join(',') }} {% if kubeadm_force_upgrade %}--force{% endif %} {% if kubeadm_etcd_upgrade %}--etcd-upgrade=true{% else %}--etcd-upgrade=false{% endif %}
@@ -8,6 +9,15 @@
     changed_when: upgrade_apply_result.rc == 0
     when: inventory_hostname == groups['masters'][0]
 
+  # Task 2: Show control plane upgrade result
+  - name: Show control plane upgrade result
+    ansible.builtin.debug:
+      var: upgrade_apply_result.stdout_lines
+    when:
+    - inventory_hostname == groups['masters'][0]
+    - upgrade_apply_result is defined
+
+  # Task 3: Verify control plane upgrade success
   - name: Verify control plane upgrade success
     ansible.builtin.assert:
       that:
@@ -16,6 +26,7 @@
       success_msg: "Control plane upgraded successfully to {{ kubeadm_latest_upgrade_version }}"
     when: inventory_hostname == groups['masters'][0]
 
+  # Task 4: Upgrade other control plane nodes
   - name: Upgrade other control plane nodes
     ansible.builtin.command: >
       kubeadm upgrade node --ignore-preflight-errors={{ kubeadm_ignore_preflight_errors | join(',') }}
@@ -25,28 +36,72 @@
     - inventory_hostname in groups['masters']
     - inventory_hostname != groups['masters'][0]
 
+  # Task 5: Show control plane node upgrade result
+  - name: Show control plane node upgrade result
+    ansible.builtin.debug:
+      var: upgrade_node_result.stdout_lines
+    when:
+    - inventory_hostname in groups['masters']
+    - inventory_hostname != groups['masters'][0]
+    - upgrade_node_result is defined
+
+  # Task 6: Upgrade worker nodes
   - name: Upgrade worker nodes
     ansible.builtin.command: >
       kubeadm upgrade node --ignore-preflight-errors={{ kubeadm_ignore_preflight_errors | join(',') }}
-    register: upgrade_node_result
-    changed_when: upgrade_node_result.rc == 0
+    register: upgrade_worker_result
+    changed_when: upgrade_worker_result.rc == 0
     when: inventory_hostname in groups['workers']
 
+  # Task 7: Show worker node upgrade result
+  - name: Show worker node upgrade result
+    ansible.builtin.debug:
+      var: upgrade_worker_result.stdout_lines
+    when:
+    - inventory_hostname in groups['workers']
+    - upgrade_worker_result is defined
+
+  # Task 8: Restart kubelet
   - name: Restart kubelet
     ansible.builtin.service:
       name: kubelet
       state: restarted
 
+  # Task 9: Debug upgrade_node_result (for troubleshooting)
+  - name: Debug upgrade_node_result
+    ansible.builtin.debug:
+      var: upgrade_node_result
+    when:
+    - inventory_hostname in groups['masters']
+    - inventory_hostname != groups['masters'][0]
+
+  # Task 10: Debug upgrade_worker_result (for troubleshooting)
+  - name: Debug upgrade_worker_result
+    ansible.builtin.debug:
+      var: upgrade_worker_result
+    when:
+    - inventory_hostname in groups['workers']
+
+  # Task 11: Verify node upgrades
   - name: Verify node upgrades
     ansible.builtin.assert:
       that:
-      - upgrade_node_result is defined
-      - "'upgraded successfully' in upgrade_node_result.stdout or 'upgraded successfully' in upgrade_node_result.stderr"
-      fail_msg: "Node upgrade failed"
-      success_msg: "Node upgraded successfully"
-    when: upgrade_node_result is defined
+      - >
+        (
+          (upgrade_node_result is defined and upgrade_node_result.stdout is defined and
+           ('upgraded successfully' in upgrade_node_result.stdout or 'successfully upgraded' in upgrade_node_result.stdout))
+          or
+          (upgrade_worker_result is defined and upgrade_worker_result.stdout is defined and
+           ('upgraded successfully' in upgrade_worker_result.stdout or 'successfully upgraded' in upgrade_worker_result.stdout))
+        ) or (
+          (upgrade_node_result is not defined or upgrade_node_result.stdout is not defined) and
+          (upgrade_worker_result is not defined or upgrade_worker_result.stdout is not defined)
+        )
+      fail_msg: "Node upgrade verification failed - check logs for details"
+      success_msg: "Node upgrade verification passed"
     ignore_errors: yes
 
+  # Task 12: Wait for API server to be available
   - name: Wait for API server to be available
     ansible.builtin.command: kubectl --kubeconfig {{ kube_config }} cluster-info
     register: api_server_check
@@ -56,21 +111,77 @@
     ignore_errors: yes
     delegate_to: "{{ groups['masters'][0] }}"
 
+  # Task 13: Get final node versions
   - name: Get final node versions
     ansible.builtin.command: kubectl --kubeconfig {{ kube_config }} get nodes -o wide
     register: node_versions
     changed_when: false
-    ignore_errors: yes
     delegate_to: "{{ groups['masters'][0] }}"
-  - name: Display upgrade summary
-    ansible.builtin.debug:
-      msg: |
-        Upgrade Summary:
-        - Target Version: v{{ kubeadm_latest_upgrade_version }}
-        - Control Plane: {{ upgrade_apply_result is defined and 'successfully' in upgrade_apply_result.stdout | default('Pending') }}
-        - Nodes Status: {{ node_versions.stdout if node_versions is defined and node_versions.stdout != '' else 'Unable to verify - API server may be restarting' }}
-        {% if upgrade_node_result is defined %}
-        - Node Upgrade Result: {{ upgrade_node_result.stdout | default('No output') }}
+  # Task 14: Display comprehensive upgrade summary
+- name: Build upgrade summary
+  set_fact:
+    upgrade_summary_lines: >-
+      {% set lines = [] %} {% set _ = lines.extend([
+        "===================================================================",
+        "KUBERNETES UPGRADE SUMMARY",
+        "Target Version: " ~ (kubeadm_latest_upgrade_version | default('Unknown')),
+        "",
+        "CONTROL PLANE UPGRADE:"
+      ]) %} {% if upgrade_apply_result is defined and upgrade_apply_result.stdout is defined %}
+        {% if 'successfully upgraded' in upgrade_apply_result.stdout %}
+          {% set _ = lines.append("First Master: Success") %}
+        {% else %}
+          {% set _ = lines.append("First Master: Failed") %}
         {% endif %}
+        {% set _ = lines.append("Upgrade Output:") %}
+        {% for line in upgrade_apply_result.stdout.split('\n') %}
+          {% set _ = lines.append("  " ~ line) %}
+        {% endfor %}
+      {% else %}
+        {% set _ = lines.append("First Master: Status unknown - no output available") %}
+      {% endif %}
 
-  tags: upgrade
+      {% set _ = lines.extend(["", "OTHER MASTER NODES:"]) %} {% if upgrade_node_result is defined and upgrade_node_result.stdout is defined %}
+        {% if 'upgraded successfully' in upgrade_node_result.stdout or 'successfully upgraded' in upgrade_node_result.stdout %}
+          {% set _ = lines.append("Upgrade Status: Success") %}
+        {% else %}
+          {% set _ = lines.append("Upgrade Status: Failed") %}
+        {% endif %}
+        {% set _ = lines.append("Upgrade Output:") %}
+        {% for line in upgrade_node_result.stdout.split('\n') %}
+          {% set _ = lines.append("  " ~ line) %}
+        {% endfor %}
+      {% else %}
+        {% set _ = lines.append("No other master nodes to upgrade or no output available") %}
+      {% endif %}
+
+      {% set _ = lines.extend(["", "WORKER NODES:"]) %} {% if upgrade_worker_result is defined and upgrade_worker_result.stdout is defined %}
+        {% if 'upgraded successfully' in upgrade_worker_result.stdout or 'successfully upgraded' in upgrade_worker_result.stdout %}
+          {% set _ = lines.append("Upgrade Status: Success") %}
+        {% else %}
+          {% set _ = lines.append("Upgrade Status: Failed") %}
+        {% endif %}
+        {% set _ = lines.append("Upgrade Output:") %}
+        {% for line in upgrade_worker_result.stdout.split('\n') %}
+          {% set _ = lines.append("  " ~ line) %}
+        {% endfor %}
+      {% else %}
+        {% set _ = lines.append("No worker nodes to upgrade or no output available") %}
+      {% endif %}
+
+      {% set _ = lines.extend(["", "CLUSTER STATUS:"]) %} {% if node_versions is defined and node_versions.stdout is defined %}
+        {% for line in node_versions.stdout.split('\n') %}
+          {% set _ = lines.append("  " ~ line) %}
+        {% endfor %}
+      {% else %}
+        {% set _ = lines.append("Unable to verify node versions - API server may be restarting") %}
+      {% endif %}
+
+      {% set _ = lines.extend(["", "==================================================================="]) %} {{ lines | to_json }}
+  when: kubeadm_latest_upgrade_version is defined
+
+- name: Display comprehensive upgrade summary
+  ansible.builtin.debug:
+    msg: "{{ item }}"
+  loop: "{{ upgrade_summary_lines | from_json }}"
+  when: kubeadm_latest_upgrade_version is defined

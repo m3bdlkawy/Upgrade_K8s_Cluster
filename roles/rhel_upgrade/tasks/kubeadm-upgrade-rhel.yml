@@ -58,10 +58,10 @@
       mode: '0755'
   - name: Create Kubernetes repo file
     ansible.builtin.copy:
-      dest: /etc/yum.repos.d/kubernetes-1.repo
+      dest: /etc/yum.repos.d/kubernetes-v{{ next_minor_version.split('.')[0] }}_{{ next_minor_version.split('.')[1] }}.repo
       content: |
-        [Upgrade_kubernetes]
-        name=Upgrade_Kubernetes
+        [kubernetes-v{{ next_minor_version.split('.')[0] }}_{{ next_minor_version.split('.')[1] }}]
+        name=Kubernetes v{{ next_minor_version }}
         baseurl={{ kubernetes_rpm_repo_format }}
         enabled=1
         gpgcheck=1
@@ -71,13 +71,13 @@
       mode: '0644'
 
 - name: Clean package manager metadata
-  ansible.builtin.command: "{{ ansible_facts.pkg_mgr }} clean all --enablerepo=Upgrade_kubernetes"
+  ansible.builtin.command: "{{ ansible_facts.pkg_mgr }} clean all --enablerepo=kubernetes-v{{ next_minor_version.split('.')[0] }}_{{ next_minor_version.split('.')[1] }}"
   changed_when: false
   timeout: 30
 
 - name: Verify repository metadata
   ansible.builtin.command: >
-    {{ ansible_facts.pkg_mgr }} --disablerepo=* --enablerepo=Upgrade_kubernetes makecache -y
+    {{ ansible_facts.pkg_mgr }} --disablerepo=* --enablerepo=kubernetes-v{{ next_minor_version.split('.')[0] }}_{{ next_minor_version.split('.')[1] }} makecache -y
   environment:
     LANG: "C"
     LC_ALL: "C"
@@ -87,7 +87,7 @@
 
 - name: Get latest available kubeadm version
   ansible.builtin.shell: |
-    {{ ansible_facts.pkg_mgr }} list --showduplicates kubeadm --disableexcludes=Upgrade_kubernetes |
+    {{ ansible_facts.pkg_mgr }} list --showduplicates kubeadm --disableexcludes=kubernetes-v{{ next_minor_version.split('.')[0] }}_{{ next_minor_version.split('.')[1] }} |
     grep {{ system_arch.stdout }} |
     sort -k 1 -t':' -g -r |
     awk '{print $2}' |
@@ -120,15 +120,24 @@
 
 - name: Upgrade kubeadm
   block:
-  - name: Temporarily remove excludes
+  - name: Find all Kubernetes repo files
+    ansible.builtin.find:
+      paths: /etc/yum.repos.d/
+      patterns: "kubernetes-v*.repo"
+      use_regex: no
+    register: kubernetes_repo_files
+
+  - name: Temporarily remove excludes from all Kubernetes repo files
     ansible.builtin.lineinfile:
-      path: /etc/yum.repos.d/kubernetes-1.repo
+      path: "{{ item.path }}"
       regexp: '^exclude='
       state: absent
+    loop: "{{ kubernetes_repo_files.files }}"
+    when: kubernetes_repo_files.matched > 0
 
   - name: Install kubeadm
     ansible.builtin.command: >
-      {{ ansible_facts.pkg_mgr }} install -y kubeadm-{{ kube_upgrade_full_version }} --disableexcludes=Upgrade_kubernetes
+      {{ ansible_facts.pkg_mgr }} install -y kubeadm-{{ kube_upgrade_full_version }} --disableexcludes=kubernetes-v{{ next_minor_version.split('.')[0] }}_{{ next_minor_version.split('.')[1] }}
     register: install_result
     ignore_errors: yes
 
@@ -136,11 +145,6 @@
   ansible.builtin.command: kubeadm version -o short
   register: kubeadm_version_check
   changed_when: false
-
-- name: Show upgrade results
-  ansible.builtin.debug:
-    msg: "Successfully upgraded kubeadm from v{{ current_version }} to {{ kubeadm_version_check.stdout }}"
-  when: kubeadm_version_check is defined
 
 - name: Set full version for kubeadm version
   ansible.builtin.set_fact:
@@ -151,3 +155,23 @@
   ansible.builtin.set_fact:
     kubectl_latest_upgrade_version: "{{ kubeadm_version_check.stdout | regex_replace('^v(\\d+\\.\\d+\\.\\d+).*', '\\1') }}"
     cacheable: true
+
+- name: Show upgrade summary
+  ansible.builtin.debug:
+    msg:
+    - "==================== KUBEADM UPGRADE SUMMARY ===================="
+    - "System Architecture: {{ system_arch.stdout }}"
+    - "Current Version: v{{ current_version }}"
+    - "Next Minor Version: v{{ next_minor_version }}"
+    - "Target Version: v{{ target_version }}"
+    - "Full Package Version: {{ kube_upgrade_full_version }}"
+    - "Upgraded Version: {{ kubeadm_version_check.stdout }}"
+    - "Repository Used: kubernetes-v{{ next_minor_version.split('.')[0] }}_{{ next_minor_version.split('.')[1] }}"
+    - "Package Manager: {{ ansible_facts.pkg_mgr }}"
+    - "================================================================"
+  when: kubeadm_version_check is defined
+
+- name: Show upgrade results
+  ansible.builtin.debug:
+    msg: "Successfully upgraded kubeadm from v{{ current_version }} to {{ kubeadm_version_check.stdout }}"
+  when: kubeadm_version_check is defined

@@ -1,10 +1,10 @@
 [masters]
-master-1  ansible_host=192.168.1.234
-master-2  ansible_host=192.168.1.235
-master-3  ansible_host=192.168.1.236
+master-1  ansible_host=192.168.1.237
+master-2  ansible_host=192.168.1.238
+master-3  ansible_host=192.168.1.240
 
 [workers]
-worker1  ansible_host=192.168.1.177
+worker1  ansible_host=192.168.1.239
 
 
 [all:vars]

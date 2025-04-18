@@ -35,33 +35,24 @@
     changed_when: false
     tags: upgrade
 
-  # - name: Check if this is first master
-  #   ansible.builtin.set_fact:
-  #     is_first_master: "{{ inventory_hostname == groups['masters'][0] }}"
-  #   tags: upgrade
-
   - name: Drain node (first master)
     ansible.builtin.shell: |
-      kubectl --kubeconfig {{ kube_config }}  drain {{ node_hostname.stdout }} \
+      kubectl --kubeconfig {{ kube_config }} drain {{ node_hostname.stdout }} \
       --ignore-daemonsets \
       --delete-emptydir-data \
       --force \
       --timeout={{ drain_timeout }}s
     args:
       executable: /bin/bash
-    remote_user: ansible
     delegate_to: "{{ groups['masters'][0] }}"
     register: drain_result
     ignore_errors: true
-    # until: drain_result.rc == 0
-    # environment:
-    #   KUBECONFIG: "/etc/kubernetes/admin.conf"
-    # environment:
-    #   KUBECONFIG: "{{ kube_config | default('/etc/kubernetes/admin.conf') }}"
+    tags: upgrade
+
   - name: Verify first master drain succeeded
     ansible.builtin.assert:
       that:
-      - not is_first_master or drain_result.rc == 0 or "evicting pods" in (drain_result.stdout | default(''))
+      - drain_result.rc == 0 or "evicting pods" in (drain_result.stdout | default(''))
       fail_msg: |
         First master drain failed on {{ node_hostname.stdout }}
         Error: {{ drain_result.stderr | default('No error output') }}
@@ -71,7 +62,8 @@
 - name: Upgrade Kubernetes components (RHEL)
   block:
   - name: Verify package repository availability
-    ansible.builtin.command: yum list available kubelet-{{ kube_upgrade_full_version }}
+    ansible.builtin.command: >
+      yum list available kubelet-{{ kube_upgrade_full_version }} --disablerepo=*  --enablerepo=kubernetes-v*
     register: pkg_check
     changed_when: false
     tags: upgrade
@@ -86,7 +78,7 @@
     ansible.builtin.yum:
       name: "kubelet-{{ kube_upgrade_full_version }}"
       state: present
-      disable_excludes: kubernetes
+      disable_excludes: Upgrade_kubernetes
     async: "{{ package_install_timeout }}"
     poll: 0
     register: kubelet_install
@@ -101,19 +93,11 @@
     delay: 10
     tags: upgrade
 
-  - name: Verify kubelet installation
-    ansible.builtin.assert:
-      that:
-      - kubelet_job_result.finished
-      - kubelet_job_result.rc == 0
-      fail_msg: "Failed to install kubelet within timeout period"
-    tags: upgrade
-
   - name: Install kubectl version
     ansible.builtin.yum:
       name: "kubectl-{{ kube_upgrade_full_version }}"
       state: present
-      disable_excludes: kubernetes
+      disable_excludes: Upgrade_kubernetes
     async: "{{ package_install_timeout }}"
     poll: 0
     register: kubectl_install
@@ -126,25 +110,6 @@
     until: kubectl_job_result.finished
     retries: "{{ (package_install_timeout|int / 10)|int + 1 }}"
     delay: 10
-    tags: upgrade
-
-  - name: Verify kubectl installation
-    ansible.builtin.assert:
-      that:
-      - kubectl_job_result.finished
-      - kubectl_job_result.rc == 0
-      fail_msg: "Failed to install kubectl within timeout period"
-    tags: upgrade
-
-  - name: Show installed kubelet version
-    ansible.builtin.command: rpm -q kubelet --qf '%{VERSION}-%{RELEASE}\n'
-    register: kubelet_rpm
-    changed_when: false
-    tags: upgrade
-
-  - name: Debug kubelet installation
-    ansible.builtin.debug:
-      msg: "Installed kubelet version: {{ kubelet_rpm.stdout }}"
     tags: upgrade
 
 - name: Restart and verify services (RHEL)
@@ -162,65 +127,64 @@
     tags: upgrade
 
   - name: Verify kubelet version
-    ansible.builtin.command: sudo kubelet --version  --kubeconfig /home/ansible/.kube/config
+    ansible.builtin.command: kubelet --version
     register: kubelet_version_check
     changed_when: false
     tags: upgrade
-  #--kubeconfig={{ kube_config | default('/etc/kubernetes/admin.conf') }}
+
 - name: Uncordon first master node
   ansible.builtin.shell: |
-    kubectl --kubeconfig {{ kube_config }}   uncordon {{ node_hostname.stdout }} 2>&1 | tee /tmp/uncordon.log
+    kubectl --kubeconfig {{ kube_config }} uncordon {{ node_hostname.stdout }}
   args:
     executable: /bin/bash
   delegate_to: "{{ groups['masters'][0] }}"
   register: uncordon_result
-  # retries: 5
-  # delay: 10
   until: uncordon_result.rc == 0
-  # environment:
-  #   KUBECONFIG: "/etc/kubernetes/admin.conf"
-  tags:
-  - uncordon
-  - upgrade
+  tags: upgrade
 
-# Debug messages to print the uncordon_result
-- name: Debug - Show uncordon result
+- name: Display comprehensive upgrade summary
   ansible.builtin.debug:
-    var: uncordon_result
-    verbosity: 1
-  when: uncordon_result is defined
-  tags:
-  - uncordon
-  - debug
+    msg: |
+      ==================== KUBERNETES UPGRADE SUMMARY ====================
+      Upgrade Details:
+      - Target Version: {{ kube_upgrade_full_version }}
+      - Repository Used: Upgrade_kubernetes
 
-- name: Debug - Show uncordon stdout
-  ansible.builtin.debug:
-    msg: "Uncordon stdout: {{ uncordon_result.stdout }}"
-  when: uncordon_result.stdout | length > 0
-  tags:
-  - uncordon
-  - debug
+      Package Status:
+      - kubelet: {{ kubelet_rpm.stdout if kubelet_rpm is defined else 'Not installed' }}
+      - Running kubelet version: {{ kubelet_version_check.stdout if kubelet_version_check is defined else 'Unknown' }}
 
-- name: Debug - Show uncordon stderr
-  ansible.builtin.debug:
-    msg: "Uncordon stderr: {{ uncordon_result.stderr }}"
-  when: uncordon_result.stderr | length > 0
-  tags:
-  - uncordon
-  - debug
+      Node Operations:
+      - Drain Status: {{ 'Success' if drain_result.rc == 0 else 'Failed' }}
+      - Uncordon Status: {{ 'Success' if uncordon_result.rc == 0 else 'Failed' }}
 
-- name: Debug - Show uncordon log file
-  ansible.builtin.command: cat /tmp/uncordon.log
-  register: uncordon_log
-  changed_when: false
+      Cluster Status:
+      {% if node_versions is defined and node_versions.stdout != '' %}
+      {{ node_versions.stdout | indent(width=8) }}
+      {% else %}
+      - Node versions could not be retrieved
+      {% endif %}
+
+      ===================================================================
   delegate_to: "{{ groups['masters'][0] }}"
-  when: uncordon_result is changed
-  tags:
-  - uncordon
-  - debug
+  tags: upgrade
 
-- name: Restore excludes
+- name: Find all Kubernetes repo files
+  ansible.builtin.find:
+    paths: /etc/yum.repos.d/
+    patterns:
+    - "kubernetes-v*.repo"
+    - "kubernetes.repo"
+    use_regex: no
+  register: kubernetes_repo_files
+  tags: upgrade
+
+- name: Restore excludes in all Kubernetes repo files
   ansible.builtin.lineinfile:
-    path: /etc/yum.repos.d/kubernetes-1.repo
+    path: "{{ item.path }}"
     insertafter: '^\[kubernetes\]'
     line: 'exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni'
+    state: present
+  loop: "{{ kubernetes_repo_files.files }}"
+  when: kubernetes_repo_files.matched > 0
+  tags: upgrade

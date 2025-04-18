@@ -12,4 +12,4 @@
   serial: 1
   tasks:
   - include_role:
-      name: debian_upgrade
+      name: rhel_upgrade
