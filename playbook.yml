@@ -1,15 +1,19 @@
-# - name: Setup Cluster Component
-#   hosts: all
-#   become: true
-#   gather_facts: true
-#   roles:
-#   - role: backup_k8s
-
-- name: upgrade the kubelet and kubectl
+---
+- name: Backup Kubernetes Components
   hosts: all
-  become: true
   gather_facts: true
+  become: true
+  roles:
+  - role: backup_k8s
+
+- name: Upgrade the whole kubernetes cluster server by server
+  hosts: all
+  gather_facts: true
+  become: true
   serial: 1
   tasks:
-  - include_role:
-      name: rhel_upgrade
+  - name: Include OS-specific upgrade role
+    include_role:
+      name: "{{ 'rhel_upgrade' if ansible_os_family == 'RedHat' else 'debian_upgrade' }}"
+    vars:
+      kube_config: "/home/ansible/.kube/config"
