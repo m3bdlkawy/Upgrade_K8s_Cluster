@@ -39,58 +39,118 @@ This Ansible playbook automates the process of upgrading Kubernetes clusters acr
 
 ---
 
-## 🔄 Workflow (K8s-Compliant)
+## Variables Used in the Playbook
 
-1. **Pre-Flight Checks**  
-   - Verifies cluster state meets [Kubernetes upgrade prerequisites](https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/#before-you-begin)  
-   - Checks etcd health using `kubectl get pods -n kube-system`
+The following variables are used in the playbook to configure the behavior of the upgrade process. These variables can be customized as needed:
 
-2. **Backup Phase**  
-   - Creates etcd snapshot (following [official backup guide](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#backing-up-an-etcd-cluster))  
-   - Backs up `/etc/kubernetes` and manifests
-
-3. **Upgrade Execution**  
-   - Masters first, then workers ([per K8s upgrade sequence](https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/#upgrade-control-plane))  
-   - Uses `kubeadm upgrade` commands  
-
----
-
-## Behavior of the Playbook
-
-This playbook is designed to upgrade your Kubernetes cluster **one minor version at a time**, as recommended by Kubernetes best practices. For example:
-- If your current Kubernetes version is `v1.23.x`, running the playbook will upgrade it to `v1.24.x`.
-- If your current Kubernetes version is `v1.24.x`, running the playbook will upgrade it to `v1.25.x`.
-
-If the cluster is already at the latest stable version available in the repositories, the playbook will **skip the upgrade process** and exit without making any changes.
-
-This ensures that:
-1. The cluster remains stable and compliant with Kubernetes' "one minor version at a time" upgrade policy.
-2. You avoid unnecessary upgrades or errors when the cluster is already up-to-date.
-
----
-
-## Important Notes for Users
-
-### Default `kube_config` Location
-The playbook uses the default `kubeconfig` location (`/home/ansible/.kube/config`) to interact with the Kubernetes cluster. This is defined in the `playbook.yaml` file under the `kube_config` variable:
-
+### Kubeadm Upgrade Configuration
 ```yaml
-vars:
-  kube_config: "/home/ansible/.kube/config"
+kubeadm_ignore_preflight_errors:
+  - CoreDNSUnsupportedPlugins
+  - CoreDNSMigration
+  - CertExpired
+
+kubeadm_force_upgrade: true
+kubeadm_etcd_upgrade: true
+kubeadm_skip_preflight: false
+kubeadm_certificate_renewal: true
+upgrade_timeout: 1800 # 30 minutes timeout for upgrade operations
 ```
+- **`kubeadm_ignore_preflight_errors`**: List of preflight errors to ignore during the upgrade process.
+- **`kubeadm_force_upgrade`**: Forces the upgrade even if preflight checks fail.
+- **`kubeadm_etcd_upgrade`**: Ensures etcd is upgraded alongside the cluster.
+- **`kubeadm_skip_preflight`**: Skips preflight checks if set to `true`.
+- **`kubeadm_certificate_renewal`**: Enables automatic renewal of certificates during the upgrade.
+- **`upgrade_timeout`**: Timeout (in seconds) for the entire upgrade operation.
 
-If your `kubeconfig` file is located elsewhere, you can override this variable by passing it as an extra argument when running the playbook:
+---
 
-```bash
-ansible-playbook -i inventory playbook.yaml --extra-vars "kube_config=/path/to/your/kubeconfig"
+### Kubernetes Repository Configuration
+```yaml
+kubernetes_repo_base_url: "https://pkgs.k8s.io/core:/stable"
+kubernetes_deb_repo_format: "deb [signed-by={{ kubernetes_key_path }}] {{ kubernetes_repo_base_url }}:/v{{ next_minor_version.split('.')[0] }}.{{ next_minor_version.split('.')[1] }}/deb/ /"
+kubernetes_rpm_repo_format: "{{ kubernetes_repo_base_url }}:/v{{ next_minor_version.split('.')[0] }}.{{ next_minor_version.split('.')[1] }}/rpm/"
 ```
+- **`kubernetes_repo_base_url`**: Base URL for the Kubernetes package repository.
+- **`kubernetes_deb_repo_format`**: Format for Debian-based systems to fetch Kubernetes packages.
+- **`kubernetes_rpm_repo_format`**: Format for RPM-based systems to fetch Kubernetes packages.
 
-### Customizing Role Options
-Each role in this playbook (`backup_k8s`, `rhel_upgrade`, `debian_upgrade`) has its own default variables defined in the `roles/<role_name>/defaults/main.yaml` file. If you need to customize these options (e.g., changing backup paths, enabling/disabling certain features), you can modify the respective `main.yaml` file for each role.
+---
 
-For example:
-- To customize the backup directory for the `backup_k8s` role, edit `roles/backup_k8s/defaults/main.yaml` and update the `backup_dir` variable.
-- To adjust package manager options for the `rhel_upgrade` or `debian_upgrade` roles, modify their respective `defaults/main.yaml` files.
+### Keyring Configuration
+```yaml
+kubernetes_key_dir: "/usr/share/keyrings"
+kubernetes_key_temp_path: "/tmp/kubernetes-apt-keyring.gpg"
+kubernetes_key_path: "{{ kubernetes_key_dir }}/kubernetes-apt-keyring.gpg"
+```
+- **`kubernetes_key_dir`**: Directory where the GPG keyring is stored.
+- **`kubernetes_key_temp_path`**: Temporary path for downloading the GPG key.
+- **`kubernetes_key_path`**: Final path for the GPG keyring.
+
+---
+
+### Version Selection Behavior
+```yaml
+version_selection_strategy: "next_minor" # next_minor or latest
+allow_downgrade: false
+```
+- **`version_selection_strategy`**: Determines whether to upgrade to the next minor version (`next_minor`) or the latest available version (`latest`).
+- **`allow_downgrade`**: Allows downgrading the Kubernetes version if set to `true`.
+
+---
+
+### Timeout Settings
+```yaml
+repo_update_timeout: 30
+package_install_timeout: 600 # 10 minutes for package operations
+drain_timeout: 300 # seconds for drain operation
+```
+- **`repo_update_timeout`**: Timeout (in seconds) for updating package repositories.
+- **`package_install_timeout`**: Timeout (in seconds) for package installation.
+- **`drain_timeout`**: Timeout (in seconds) for draining nodes during the upgrade.
+
+---
+
+### Node Upgrade Configuration
+```yaml
+kube_config: "/home/ansible/.kube/config" # default kubeconfig location
+# kube_config: /etc/kubernetes/admin.conf
+```
+- **`kube_config`**: Path to the kubeconfig file used to interact with the Kubernetes cluster. Defaults to `/home/ansible/.kube/config`.
+
+---
+
+### Backup Configuration
+```yaml
+backup_dir: "/opt/k8s-pre-upgrade-backup-{{ ansible_date_time.date }}"
+etcd_cert_dir: "/etc/kubernetes/pki/etcd"
+etcd_snapshot_prefix: "etcd-snapshot"
+kubeadm_config_path: "/etc/kubernetes"
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+etcd_backup_dir: "/opt/etcd-backups"
+```
+- **`backup_dir`**: Directory where pre-upgrade backups are stored, with a timestamp appended.
+- **`etcd_cert_dir`**: Directory containing etcd certificates.
+- **`etcd_snapshot_prefix`**: Prefix for etcd snapshot files.
+- **`kubeadm_config_path`**: Path to the kubeadm configuration directory.
+- **`kubeconfig_path`**: Path to the kubeconfig file for administrative access.
+- **`etcd_backup_dir`**: Directory where etcd backups are stored.
+
+---
+
+### etcd Configuration
+```yaml
+etcd_version: "v3.5.12"
+etcd_cert: "/etc/kubernetes/pki/etcd/server.crt"
+etcd_key: "/etc/kubernetes/pki/etcd/server.key"
+etcd_ca: "/etc/kubernetes/pki/etcd/ca.crt"
+etcd_endpoints: "https://127.0.0.1:2379"
+etcd_binary_url: "https://github.com/etcd-io/etcd/releases/download/{{ etcd_version }}/etcd-{{ etcd_version }}-linux-amd64.tar.gz"
+```
+- **`etcd_version`**: Version of etcd to use for backups.
+- **`etcd_cert`, `etcd_key`, `etcd_ca`**: Paths to etcd certificates and keys.
+- **`etcd_endpoints`**: Endpoint URL for etcd.
+- **`etcd_binary_url`**: URL to download the etcd binary.
 
 ---
 
@@ -105,34 +165,6 @@ master1 ansible_host=<master-ip>
 [workers]
 worker1 ansible_host=<worker-ip>
 worker2 ansible_host=<worker-ip>
-```
-
----
-
-## Playbook (`playbook.yaml`)
-
-Below is the structure of the Ansible playbook that performs the Kubernetes cluster upgrade:
-
-```yaml
----
-- name: Backup Kubernetes Components
-  hosts: all
-  gather_facts: true
-  become: true
-  roles:
-  - role: backup_k8s
-
-- name: Upgrade the whole Kubernetes cluster server by server
-  hosts: all
-  gather_facts: true
-  become: true
-  serial: 1
-  tasks:
-  - name: Include OS-specific upgrade role
-    include_role:
-      name: "{{ 'rhel_upgrade' if ansible_os_family == 'RedHat' else 'debian_upgrade' }}"
-    vars:
-      kube_config: "/home/ansible/.kube/config"
 ```
 
 ---
