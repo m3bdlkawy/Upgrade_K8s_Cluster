@@ -219,6 +219,7 @@ You can customize the default values in several ways:
    ansible-playbook -i inventory playbook.yaml -e @vars.yaml
    ```
 
+
 ---
 
 ## Troubleshooting
@@ -239,4 +240,25 @@ upgrade_timeout: 3600 # Increase timeout to 1 hour
 - Ensure that SSH access is configured for all nodes in the inventory file.
 - The `backup_k8s`, `rhel_upgrade`, and `debian_upgrade` roles must be defined in your Ansible project directory.
 - Always verify the health of your cluster before and after running the playbook.
+---
+## Example Upgrade Output
 
+### Successful Master Node Upgrade
+![Master Node Upgrade Summary](/home/mohamed/Pictures/Screenshots/Screenshot_from_2025-04-29_15-50-32.png)
+
+This output shows a successful upgrade of a master node from Kubernetes v1.31.8 to v1.32.4, including:
+- System architecture
+- Current and target versions
+- Repository used
+- Package manager details
+
+### Comprehensive Cluster Status After Upgrade
+![Cluster Upgrade Summary](/home/mohamed/Pictures/Screenshots/Screenshot_from_2025-04-29_16-03-42.png)
+
+This output shows:
+- Detailed upgrade status across the cluster
+- Node versions before and after upgrade
+- Drain/uncordon operations status
+- Cluster-wide version consistency check
+
+---
