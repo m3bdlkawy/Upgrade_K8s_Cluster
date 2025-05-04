@@ -245,8 +245,9 @@ upgrade_timeout: 3600 # Increase timeout to 1 hour
 
 ### Successful Master Node Upgrade
 <p align="center">
-  <img src="images/Screenshot_from_2025-04-29_15-50-32.png" alt="Upgrade Summary" width="800"/>
+  <img src="https://github.com/m3bdlkawy/Upgrade_K8s_Cluster/raw/main/images/screenshot-2025-04-29-15-50-32.png" alt="Upgrade Summary" width="800">
 </p>
+
 This output shows a successful upgrade of a master node from Kubernetes v1.31.8 to v1.32.4, including:
 - System architecture
 - Current and target versions
@@ -255,12 +256,12 @@ This output shows a successful upgrade of a master node from Kubernetes v1.31.8 
 
 ### Comprehensive Cluster Status After Upgrade
 <p align="center">
-  <img src="images/Screenshot_from_2025-04-29_16-03-42.png" alt="Cluster Status" width="800"/>
+  <img src="https://github.com/m3bdlkawy/Upgrade_K8s_Cluster/raw/main/images/screenshot-2025-04-29-16-03-42.png" alt="Cluster Status" width="800">
 </p>
+
 This output shows:
 - Detailed upgrade status across the cluster
 - Node versions before and after upgrade
 - Drain/uncordon operations status
 - Cluster-wide version consistency check
-
 ---
