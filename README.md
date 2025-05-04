@@ -244,7 +244,7 @@ upgrade_timeout: 3600 # Increase timeout to 1 hour
 ## Example Upgrade Output
 
 ### Successful Master Node Upgrade
-![Master Node Upgrade Summary](/home/mohamed/Pictures/Screenshots/Screenshot_from_2025-04-29_15-50-32.png)
+![Master Node Upgrade Summary](/images/Screenshot_from_2025-04-29_15-50-32.png)
 
 This output shows a successful upgrade of a master node from Kubernetes v1.31.8 to v1.32.4, including:
 - System architecture
@@ -253,7 +253,7 @@ This output shows a successful upgrade of a master node from Kubernetes v1.31.8 
 - Package manager details
 
 ### Comprehensive Cluster Status After Upgrade
-![Cluster Upgrade Summary](/home/mohamed/Pictures/Screenshots/Screenshot_from_2025-04-29_16-03-42.png)
+![Cluster Upgrade Summary](/images/Screenshot_from_2025-04-29_16-03-42.png)
 
 This output shows:
 - Detailed upgrade status across the cluster
